@@ -1,0 +1,52 @@
+version: "3"
+
+services:
+
+  postgresql:
+    build:
+      context: ./docker/postgresql/
+      dockerfile: Dockerfile
+    container_name: postgres-fastapi
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "rootroot"
+    volumes:
+      - pgdata_fastapi:/var/lib/postgresql/data/
+    ports:
+      - "5432:5432"
+    restart: on-failure
+
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    container_name: nginx-fastapi
+    depends_on:
+      - postgresql
+    ports:
+      - "80:80"
+    volumes:
+      - ./app/static/:/static/:rw
+      # для быстрого изменения конфигурации nginx.conf
+      - ./docker/nginx/nginx.conf:/etc/nginx/conf.d/nginx.conf:rw
+    restart: on-failure
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: app-fastapi
+    env_file:
+      - .env
+    volumes:
+      - ./:/app:rw
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgresql
+      - nginx
+
+volumes:
+  pgdata_fastapi:
