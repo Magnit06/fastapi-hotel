@@ -8,5 +8,6 @@ RUN python -m pip install --upgrade pip && pip install --no-cache-dir --upgrade 
 
 COPY . .
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+RUN chmod +x ./entry.sh
 
+ENTRYPOINT ["/app/entry.sh"]
