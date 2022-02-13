@@ -27,6 +27,14 @@ class Room(Base, TimeCheckInterface):
     def __repr__(self) -> str:
         return f"<{Room.__name__}> {self.name}"
 
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "price":  self.price,
+            "name": self.name,
+            "number_of_seats": self.number_of_seats
+        }
+
 
 class BookingNumber(Base, TimeCheckInterface):
     """
@@ -48,3 +56,12 @@ class BookingNumber(Base, TimeCheckInterface):
 
     def __repr__(self) -> str:
         return f"<{BookingNumber.__name__}> {self.booking_number}"
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "booking_number": self.booking_number,
+            "date_in": self.date_in,
+            "date_out": self.date_out,
+            "room_id": self.room_id,
+        }

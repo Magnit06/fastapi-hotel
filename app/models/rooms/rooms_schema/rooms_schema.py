@@ -36,3 +36,14 @@ class RoomSchema(RoomBase):
 
     class Config:
         orm_mode = True
+
+
+class RoomSearchResponse(RoomBase):
+    """Ответ на поиск номера"""
+    pass
+
+
+class BookingRoomSearchResponse(BaseModel):
+    """Ответ на поиск дат по номеру брони"""
+    date_in: date
+    date_out: date

@@ -28,7 +28,6 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./app/static/:/static/:rw
       # для быстрого изменения конфигурации nginx.conf
       - ./docker/nginx/nginx.conf:/etc/nginx/conf.d/nginx.conf:rw
     restart: on-failure

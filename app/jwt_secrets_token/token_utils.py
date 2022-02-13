@@ -3,8 +3,10 @@ import datetime
 import jwt
 
 from config import get_config
+from app.log import get_logger
 
 conf = get_config()
+logger = get_logger(__name__)
 
 
 async def create_jwt_token(user: str) -> str:
@@ -26,9 +28,8 @@ async def decode_info_from_token(token: str) -> str | None:
             algorithms=conf.JWT_ALGORITHM,
             options={"require": ["exp", "login"]}
         )
-    except jwt.exceptions.ExpiredSignatureError as jwt_except:
-        # ошибка свежести token
-        print(f"Токен протух {jwt_except}")
+    except jwt.exceptions.ExpiredSignatureError:
+        logger.exception("Истек срок годности токена", exc_info=True)
         return None
     else:
         return payload["login"]

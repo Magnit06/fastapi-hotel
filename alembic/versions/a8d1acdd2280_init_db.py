@@ -1,8 +1,8 @@
 """init DB
 
-Revision ID: 5aac749dac54
+Revision ID: a8d1acdd2280
 Revises: 
-Create Date: 2022-02-04 15:16:48.059115
+Create Date: 2022-02-12 15:04:44.211572
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = '5aac749dac54'
+revision = 'a8d1acdd2280'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -48,15 +48,13 @@ def upgrade():
     sa.Column('created_at', sa.DateTime(), nullable=False, comment='Время создания записи'),
     sa.Column('updated_at', sa.DateTime(), nullable=False, comment='Время последнего изменения записи'),
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('booking_number', postgresql.UUID(), nullable=False, comment='Номер брони'),
+    sa.Column('booking_number', postgresql.UUID(as_uuid=True), nullable=False, comment='Номер брони'),
     sa.Column('date_in', sa.Date(), nullable=False, comment='Дата заезда'),
     sa.Column('date_out', sa.Date(), nullable=False, comment='Дата выезда'),
     sa.Column('room_id', sa.Integer(), nullable=True, comment='Внешний ключ к комнатам'),
     sa.ForeignKeyConstraint(['room_id'], ['rooms.id'], ),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('booking_number'),
-    sa.UniqueConstraint('date_in'),
-    sa.UniqueConstraint('date_out')
+    sa.UniqueConstraint('booking_number')
     )
     op.create_index(op.f('ix_booking_numbers_created_at'), 'booking_numbers', ['created_at'], unique=False)
     op.create_index(op.f('ix_booking_numbers_id'), 'booking_numbers', ['id'], unique=False)

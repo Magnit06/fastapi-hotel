@@ -4,7 +4,12 @@ WORKDIR /app
 
 COPY ./req.txt .
 
-RUN python -m pip install --upgrade pip && pip install --no-cache-dir --upgrade -r req.txt
+RUN python -m pip install --upgrade pip && pip install -r req.txt
+
+COPY poetry.lock pyproject.toml /app/
+
+RUN poetry config virtualenvs.create false \
+    && poetry install $(test "${CUR_ENV}" == prod && echo "--no-dev") --no-interaction --no-ansi
 
 COPY . .
 

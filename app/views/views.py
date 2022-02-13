@@ -1,19 +1,27 @@
-from fastapi import Depends
+import uuid
+from datetime import date
+
+from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_, and_
-from datetime import datetime, date
+from asyncpg.exceptions import UniqueViolationError
 
 from app import app
 from app.models.users.users_schema import (UserSchema, UserCreate, UserLogin, UserToken,
                                            UserAddManagerCreate, UserAddManagerSchema)
 from app.models.rooms.rooms_schema import RoomSchema, RoomCreate
 from app.models.rooms.rooms_schema import BookingNumberSchema, BookingNumberBase
+from app.models.rooms.rooms_schema import RoomSearchResponse, BookingRoomSearchResponse
 from app.models.users import User
 from app.models.rooms import Room, BookingNumber
 from app.db import get_session
-from app.jwt_secrets_token import create_jwt_token, decode_info_from_token
+from app.jwt_secrets_token import create_jwt_token
 from app.utils import check_role
+from app.log import get_logger
+
+# init logger
+logger = get_logger(__name__)
 
 
 @app.get("/")
@@ -34,16 +42,16 @@ async def register(user: UserCreate, session: AsyncSession = Depends(get_session
         new_user.password = user.password
         session.add(new_user)
         await session.commit()
-    except Exception as trans_except:
-        print(f"Ошибка добавления пользователя!\n{trans_except}")
+    except Exception:
+        logger.exception("Ошибка добавления пользователя!", exc_info=True)
         await session.rollback()
     else:
+        logger.info(f"Пользователь {new_user.login} успешно добавлен")
         await session.refresh(new_user)
         return new_user
 
 
 @app.post("/api/login",
-          response_model=UserToken,
           status_code=200,
           tags=["login"],
           summary="Получаем токен",
@@ -53,16 +61,19 @@ async def login(user: UserLogin, session: AsyncSession = Depends(get_session)):
     try:
         exist_user = await session.execute(select(User).where(User.login == user.login))
         exist_user = exist_user.scalars().first()
-        print(f"exist_user    {exist_user.login} {exist_user.password}")
+        logger.debug(f"Полученный пользователь {user.login} {user.password}")
         if exist_user and exist_user.check_password(inp_passwd=user.password):
             token = await create_jwt_token(user=exist_user.login)
         else:
-            return UserToken(token="Неправильные логин пользователя или пароль")
+            logger.debug("Неправильные логин пользователя или пароль")
+            return HTTPException(status_code=401,
+                                 detail="Неправильные логин пользователя или пароль")
         await session.commit()
-    except Exception as trans_except:
-        print(f"Ошибка извлечения записи из БД по логину {trans_except}")
+    except Exception:
+        logger.exception("Ошибка извлечения записи из БД по логину и паролю", exc_info=True)
         await session.rollback()
     else:
+        logger.info(f"Токен для пользователя {exist_user.login} выдан")
         return UserToken(token=token)
 
 
@@ -80,10 +91,11 @@ async def add_manager(schema: UserAddManagerCreate, session: AsyncSession = Depe
         new_manager.password = schema.password
         session.add(new_manager)
         await session.commit()
-    except Exception as trans_except:
-        print(f"Ошибка добавления пользователя!\n{trans_except}")
+    except UniqueViolationError:
+        logger.exception(f"Ошибка добавления пользователя {schema.login}", exc_info=True)
         await session.rollback()
     else:
+        logger.info(f"Пользователь {schema.login} успешно добавлен")
         await session.refresh(new_manager)
         return new_manager
 
@@ -102,16 +114,16 @@ async def add_room_in_hotel(schema: RoomCreate, session: AsyncSession = Depends(
                         number_of_seats=schema.number_of_seats)
         session.add(new_room)
         await session.commit()
-    except Exception as trans_exc:
-        print(f"Ошибка создания комнаты {trans_exc}")
+    except UniqueViolationError:
+        logger.exception(f"Ошибка создания комнаты {schema.name}", exc_info=True)
         await session.rollback()
     else:
+        logger.info(f"Комната {new_room.name} успешно добавлена")
         await session.refresh(new_room)
         return new_room
 
 
 @app.post("/api/booking/room",
-          response_model=BookingNumberSchema,
           status_code=201,
           tags=['booking_room'],
           summary="Забронировать номер",
@@ -120,77 +132,128 @@ async def add_room_in_hotel(schema: RoomCreate, session: AsyncSession = Depends(
 async def booking_room(schema: BookingNumberBase, session: AsyncSession = Depends(get_session)):
     await session.begin()
     try:
-        # получаем id комнаты
-        where = Room.name == schema.room_name
-        exist_room_name = await session.execute(select(Room.id).where(where))
-        id_room: int = exist_room_name.scalar()
+        # + Дата заезда и отъезда
+        # одного номера брони не могут быть равны
+        if schema.date_in == schema.date_out:
+            logger.debug("Даты заезда и выезда не могут быть равны, "
+                         f"заезд {schema.date_in} == выезд {schema.date_out}")
+            return HTTPException(status_code=412,
+                                 detail=str("Даты заезда и выезда не могут быть равны, "
+                                            f"заезд {schema.date_in} == выезд {schema.date_out}"))
 
-        where_date = or_(BookingNumber.date_in == schema.date_in,
-                         BookingNumber.date_out == schema.date_out)
-        where_room_id = and_(BookingNumber.room_id == id_room)
-        exist_record = await session.execute(select(BookingNumber.id).where(where_date, where_room_id).limit(1))
-        exist_record = exist_record.first()
-        if exist_record:
-            # TODO доработать этот момент логинга
-            return
-        # +
-        if schema.date_in == schema.date_out or schema.date_in > schema.date_out or \
-                schema.date_in < date.today():
-            print("Даты заезда и выезда не могут быть равны, "
-                  "к тому же заезжать нужно раньше выезда и приезжать не задним числом!!!\n"
-                  f"{schema.date_in} == {schema.date_out}")
-            return
+        # получаем id комнаты, чтобы на его основе валидировать бронь
+        where_room_name = Room.name == schema.room_name
+        query = await session.execute(select(Room.id)
+                                      .where(where_room_name))
+        room_id = query.scalar()
 
-        # запрос на получение последней даты бронирования запрошенной комнаты
-        query = await session.execute(select(BookingNumber.date_in, BookingNumber.date_out)
-                                      .where(BookingNumber.room_id == id_room)
-                                      .order_by(BookingNumber.id.desc()).limit(1))
-        result_date = query.first()
-        if result_date:
-            print(f"result_date ==== {result_date}")
+        # проверим даты на уникальность для конкретного номера, для проверки хватит одной записи
+        where = or_(BookingNumber.date_in == schema.date_in,
+                    BookingNumber.date_out == schema.date_out)
+        query = await session.execute(select(BookingNumber.id,
+                                             BookingNumber.date_in,
+                                             BookingNumber.date_out)
+                                      .where(where, and_(BookingNumber.room_id == room_id)).limit(1))
+        exist_booking = query.first()
+        if exist_booking:
+            logger.warning(f"Такая дата въезда {exist_booking.date_in} или "
+                           f"выезда {exist_booking.date_out} уже существует "
+                           f"в записи {exist_booking.id}, выберите другие даты")
+            return HTTPException(status_code=412,
+                                 detail=str(f"Такая дата въезда {exist_booking.date_in} или "
+                                            f"выезда {exist_booking.date_out} уже существует, выберите другие даты"))
 
-            # последняя бронь на въезд
-            last_booking_date_in = datetime.strptime(
-                str(result_date.date_in),
-                "%Y-%m-%d"
-            )
-            # последняя бронь на выезд
-            last_booking_date_out = datetime.strptime(
-                str(result_date.date_out),
-                "%Y-%m-%d"
-            )
-            # введенная бронь на въезд
-            input_date_in = datetime.strptime(
-                str(schema.date_in),
-                "%Y-%m-%d"
-            )
-            # введенная бронь на выезд
-            input_date_out = datetime.strptime(
-                str(schema.date_out),
-                "%Y-%m-%d"
-            )
-
-            # +
-            if input_date_out < last_booking_date_out and input_date_in > last_booking_date_in or \
-                    (input_date_out < last_booking_date_out or input_date_in > last_booking_date_in):
-                print("Даты разной брони одной комнаты не могут пересекаться\n"
-                      f"{input_date_out} < {last_booking_date_out}\n"
-                      f"{input_date_in} > {last_booking_date_in}")
-                return
-
-            print(f"last_booking_date_out ==== {last_booking_date_out}\n"
-                  f"input_date_out ==== {input_date_out}\n"
-                  f"input_date_in ==== {input_date_in}\n"
-                  f"last_booking_date_in ==== {last_booking_date_in}")
+        # + даты разных номеров брони одной комнаты не могут пересекаться
+        # здесь смотрю, чтобы дата въезда не была меньше даты выезда
+        where = and_(schema.date_in < BookingNumber.date_out,
+                     BookingNumber.room_id == room_id)
+        query = await session.execute(select(BookingNumber.id)
+                                      .where(where))
+        crossed_reservation = query.first()
+        if crossed_reservation:
+            logger.error("Даты разных номеров брони одной комнаты не могут пересекаться")
+            return HTTPException(status_code=412,
+                                 detail="Даты разных номеров брони одной комнаты не могут пересекаться")
 
         new_booking = BookingNumber(date_in=schema.date_in,
                                     date_out=schema.date_out,
-                                    room_id=id_room)
+                                    room_id=room_id)
         session.add(new_booking)
         await session.commit()
-    except Exception as trans_exc:
-        print(f"Ошибка создания брони на комнату {trans_exc}")
+    except Exception:
+        logger.exception(f"Ошибка создания брони на комнату {schema.room_name}")
         await session.rollback()
     else:
+        logger.info(f"Бронь на комнату {schema.room_name} успешно создалась "
+                    f"{schema.date_in} {schema.date_out}")
         await session.refresh(new_booking)
-        return new_booking
+        return BookingNumberSchema(**new_booking.to_dict())
+
+
+@app.get('/api/room/search',
+         response_model=list[RoomSearchResponse],
+         status_code=200,
+         tags=["search_room"],
+         summary="Поиск номера",
+         description="Поиск номера на основании дат и кол-ва мест")
+@check_role(access_role=["A", "M"])
+async def search_room(data_in: date = Query(...,
+                                            title="Дата въезда",
+                                            example="YYYY-MM-DD"),
+                      data_out: date = Query(...,
+                                             title="Дата выезда",
+                                             example="YYYY-MM-DD"),
+                      number_of_seats: int = Query(...,
+                                                   title="Количество мест",
+                                                   example=int(2)),
+                      token: str = Query(...,
+                                         title="Токен доступа"),
+                      session: AsyncSession = Depends(get_session)):
+    await session.begin()
+    try:
+        where = and_(BookingNumber.date_in == data_in,
+                     BookingNumber.date_out == data_out,
+                     Room.number_of_seats == number_of_seats)
+        query = await session.execute(select(Room.name,
+                                             Room.number_of_seats,
+                                             Room.price).join(BookingNumber)
+                                      .where(where))
+        rooms = query.all()
+        logger.debug(f"Результат запроса на поиск номера {rooms}")
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("Ошибка поиска номера", exc_info=True)
+    else:
+        return rooms
+
+
+@app.get('/api/booking/room/date',
+         status_code=200,
+         tags=["get_info_by_booking_room"],
+         summary="Поиск дат",
+         description="Поиск дат на основании номер брони")
+@check_role(['A', 'M'])
+async def get_info_by_booking_room(booking_number: uuid.UUID = Query(...,
+                                                                     title="Номер брони",
+                                                                     example="uuid4"),
+                                   token: str = Query(...,
+                                                      title="Токен"),
+                                   session: AsyncSession = Depends(get_session)):
+    await session.begin()
+    try:
+        where = BookingNumber.booking_number == booking_number
+        query = await session.execute(select(BookingNumber.date_in,
+                                             BookingNumber.date_out)
+                                      .where(where))
+        info_by_booking_number = query.first()
+        await session.commit()
+    except Exception:
+        logger.exception("Ошибка получения информации по номеру брони",
+                         exc_info=True)
+        return HTTPException(status_code=412,
+                             detail="Ошибка получения информации по номеру брони")
+    else:
+        logger.debug(f"Получена информация по номеру брони {info_by_booking_number}")
+        return BookingRoomSearchResponse(date_in=info_by_booking_number.date_in,
+                                         date_out=info_by_booking_number.date_out)
