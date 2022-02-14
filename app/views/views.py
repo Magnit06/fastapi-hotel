@@ -1,10 +1,10 @@
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, delete
 from asyncpg.exceptions import UniqueViolationError
 
 from app import app
@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 
 @app.get("/")
-async def home():
+async def home() -> dict[str, str]:
     return {"Привет!": "Ты  находишься на домашнем endpoint"}
 
 
@@ -35,7 +35,7 @@ async def home():
           tags=['register'],
           summary="Регистрируем пользователя в БД",
           description="Регистрируем пользователя в БД на основе переданных логина и пароля")
-async def register(user: UserCreate, session: AsyncSession = Depends(get_session)):
+async def register(user: UserCreate, session: AsyncSession = Depends(get_session)) -> UserSchema:
     await session.begin()
     try:
         new_user = User(login=user.login, role=user.role)
@@ -56,7 +56,7 @@ async def register(user: UserCreate, session: AsyncSession = Depends(get_session
           tags=["login"],
           summary="Получаем токен",
           description="Получаем токен на основе регистрационных данных")
-async def login(user: UserLogin, session: AsyncSession = Depends(get_session)):
+async def login(user: UserLogin, session: AsyncSession = Depends(get_session)) -> UserToken | HTTPException:
     await session.begin()
     try:
         exist_user = await session.execute(select(User).where(User.login == user.login))
@@ -84,7 +84,8 @@ async def login(user: UserLogin, session: AsyncSession = Depends(get_session)):
           summary="Добавляем менеджера",
           description="Добавляем менеджера с логином и паролем, передав секретный токен")
 @check_role(access_role=["A"])
-async def add_manager(schema: UserAddManagerCreate, session: AsyncSession = Depends(get_session)):
+async def add_manager(schema: UserAddManagerCreate,
+                      session: AsyncSession = Depends(get_session)) -> UserAddManagerSchema:
     await session.begin()
     try:
         new_manager = User(login=schema.login, role=schema.role)
@@ -107,7 +108,7 @@ async def add_manager(schema: UserAddManagerCreate, session: AsyncSession = Depe
           summary="Добавляем комнату",
           description="Добавляем комнату в отель")
 @check_role(["A"])
-async def add_room_in_hotel(schema: RoomCreate, session: AsyncSession = Depends(get_session)):
+async def add_room_in_hotel(schema: RoomCreate, session: AsyncSession = Depends(get_session)) -> RoomSchema:
     await session.begin()
     try:
         new_room = Room(name=schema.name, price=schema.price,
@@ -129,7 +130,8 @@ async def add_room_in_hotel(schema: RoomCreate, session: AsyncSession = Depends(
           summary="Забронировать номер",
           description="Бронирование номера")
 @check_role(access_role=["A", "M"])
-async def booking_room(schema: BookingNumberBase, session: AsyncSession = Depends(get_session)):
+async def booking_room(schema: BookingNumberBase,
+                       session: AsyncSession = Depends(get_session)) -> BookingNumberSchema | HTTPException:
     await session.begin()
     try:
         # + Дата заезда и отъезда
@@ -208,7 +210,7 @@ async def search_room(data_in: date = Query(...,
                                                    example=int(2)),
                       token: str = Query(...,
                                          title="Токен доступа"),
-                      session: AsyncSession = Depends(get_session)):
+                      session: AsyncSession = Depends(get_session)) -> list[RoomSearchResponse]:
     await session.begin()
     try:
         where = and_(BookingNumber.date_in == data_in,
@@ -232,14 +234,14 @@ async def search_room(data_in: date = Query(...,
          status_code=200,
          tags=["get_info_by_booking_room"],
          summary="Поиск дат",
-         description="Поиск дат на основании номер брони")
+         description="Поиск дат на основании номера брони")
 @check_role(['A', 'M'])
 async def get_info_by_booking_room(booking_number: uuid.UUID = Query(...,
                                                                      title="Номер брони",
                                                                      example="uuid4"),
                                    token: str = Query(...,
                                                       title="Токен"),
-                                   session: AsyncSession = Depends(get_session)):
+                                   session: AsyncSession = Depends(get_session)) -> BookingRoomSearchResponse | HTTPException:
     await session.begin()
     try:
         where = BookingNumber.booking_number == booking_number
@@ -257,3 +259,67 @@ async def get_info_by_booking_room(booking_number: uuid.UUID = Query(...,
         logger.debug(f"Получена информация по номеру брони {info_by_booking_number}")
         return BookingRoomSearchResponse(date_in=info_by_booking_number.date_in,
                                          date_out=info_by_booking_number.date_out)
+
+
+@app.get('/api/room/date',
+         status_code=200,
+         tags=["get_info_by_room"],
+         summary="Поиск дат",
+         description="Поиск дат на основании номера комнаты")
+@check_role(access_role=["A", "M"])
+async def get_info_by_room(name: int = Query(...,
+                                             title="Номер комнаты"),
+                           token: str = Query(...,
+                                              title="Токен"),
+                           session: AsyncSession = Depends(get_session)) -> list[BookingRoomSearchResponse] | HTTPException:
+    await session.begin()
+    try:
+        where = Room.name == name
+        query = await session.execute(select(BookingNumber.date_in, BookingNumber.date_out)
+                                      .join(Room).where(where))
+        date_bookings_room = query.all()
+        logger.debug(f"Полученные даты по номеру комнаты {date_bookings_room}")
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("Произошла ошибка извлечения дат", exc_info=True)
+        return HTTPException(status_code=412,
+                             detail="Произошла ошибка извлечения дат")
+    else:
+        return [BookingRoomSearchResponse(date_in=date_booking_room.date_in,
+                                          date_out=date_booking_room.date_out) for date_booking_room in date_bookings_room]
+
+
+@app.delete('/api/room/booking/delete',
+          status_code=200,
+          tags=["delete_booking"],
+          summary="Удаление брони",
+          description="Удаление брони по номеру брони")
+@check_role(access_role=["A", "M"])
+async def delete_booking(booking_number: uuid.UUID = Body(...,
+                                                          title="Номер брони"),
+                         token: str = Body(...,
+                                           title="токен"),
+                         session: AsyncSession = Depends(get_session)) -> dict[str, str] | HTTPException:
+    await session.begin()
+    try:
+        where = BookingNumber.booking_number == booking_number
+        query = await session.execute(select(BookingNumber.date_in).where(where))
+        booking_on_delete = query.first()
+        logger.debug(f"Запись на удаление брони с датой {booking_on_delete}")
+        if booking_on_delete.date_in > (date.today() + timedelta(days=3)):
+            # только за дату > 3 дням до даты заезда
+            query = await session.execute(delete(BookingNumber).where(where))
+            logger.debug(f"Запрос на удаление {query}")
+            await session.commit()
+        else:
+            logger.debug("Удалять уже слишком поздно")
+            await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("Неожиданно удаление не произошло", exc_info=True)
+        return HTTPException(status_code=412,
+                             detail="Неожиданно удаление не произошло")
+    else:
+        logger.debug(f"Бронь {booking_number} успешно удалена")
+        return {"message": f"Бронь {booking_number} успешно удалена"}

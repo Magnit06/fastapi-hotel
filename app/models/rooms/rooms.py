@@ -14,12 +14,15 @@ class Room(Base, TimeCheckInterface):
     """
     __tablename__ = "rooms"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True,
+                index=True, autoincrement=True)
     price = Column(DECIMAL, nullable=False, comment="Цена за ночь")
-    name = Column(Integer, nullable=False, unique=True, comment="Номер комнаты")
-    number_of_seats = Column(SmallInteger, nullable=False,
+    name = Column(Integer, nullable=False, unique=True, index=True,
+                  comment="Номер комнаты")
+    number_of_seats = Column(SmallInteger, nullable=False, index=True,
                              comment="количество мест")
-    booking_numbers = relationship("BookingNumber", back_populates="room")
+    booking_numbers = relationship("BookingNumber", back_populates="room",
+                                   cascade="all, delete")
 
     def __str__(self) -> str:
         return f"<{Room.__name__}> {self.name}"
@@ -42,12 +45,20 @@ class BookingNumber(Base, TimeCheckInterface):
     """
     __tablename__ = "booking_numbers"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    booking_number = Column(UUID(as_uuid=True), nullable=False, unique=True, comment="Номер брони",
-                            default=uuid4)
-    date_in = Column(Date, nullable=False, unique=False, comment="Дата заезда")
-    date_out = Column(Date, nullable=False, unique=False, comment="Дата выезда")
-    room_id = Column(Integer, ForeignKey('rooms.id'), comment="Внешний ключ к комнатам")
+    id = Column(Integer, primary_key=True, index=True,
+                autoincrement=True)
+    booking_number = Column(UUID(as_uuid=True),
+                            nullable=False, unique=True,
+                            comment="Номер брони", default=uuid4,
+                            index=True)
+    date_in = Column(Date, nullable=False,
+                     unique=False, index=True,
+                     comment="Дата заезда")
+    date_out = Column(Date, nullable=False,
+                      unique=False, index=True,
+                      comment="Дата выезда")
+    room_id = Column(Integer, ForeignKey('rooms.id', ondelete="CASCADE"),
+                     index=True, comment="Внешний ключ к комнатам")
 
     room = relationship("Room", back_populates="booking_numbers")
 
